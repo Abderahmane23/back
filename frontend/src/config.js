@@ -1,16 +1,20 @@
-/**
- * Configuration - Development Only
- * Fixed for localhost development
+/** 
+ * Configuration - Development or Production
+ * Automatically uses Beam backend URL in production
  */
 
 export const AppConfig = {
   ENV: import.meta.env.MODE || 'development',
 
   // ===== API =====
-  API_BASE_URL: import.meta.env.VITE_API_URL || 'http://localhost:5000',
+  // Replace with your Beam deployed backend URL
+  API_BASE_URL:
+    import.meta.env.VITE_API_URL || 'https://70773dfa-4da5-4778-ad2e-c766db95c34f-3000.app.beam.cloud',
 
   // ===== IMAGES =====
-  IMAGES_BASE_URL: import.meta.env.VITE_IMAGES_URL || 'http://localhost:5000/images/products',
+  // Base URL for product images served by backend
+  IMAGES_BASE_URL:
+    import.meta.env.VITE_IMAGES_URL || 'https://70773dfa-4da5-4778-ad2e-c766db95c34f-3000.app.beam.cloud/images/products',
 
   // ===== PAGINATION =====
   PRODUCTS_PER_PAGE: 10,
@@ -24,7 +28,6 @@ export const AppConfig = {
    * @returns {string} URL complète
    */
   api(path) {
-    // S'assurer que le path commence par /
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
     return `${this.API_BASE_URL}/api${cleanPath}`;
   },
@@ -39,12 +42,10 @@ export const AppConfig = {
       return 'https://via.placeholder.com/300?text=No+Image';
     }
 
-    // Si c'est déjà une URL complète, la retourner telle quelle
     if (filename.startsWith('http://') || filename.startsWith('https://')) {
       return filename;
     }
 
-    // Construire l'URL pour le backend
     return `${this.IMAGES_BASE_URL}/${filename}`;
   },
 
@@ -59,7 +60,7 @@ export const AppConfig = {
   }
 };
 
-// Log pour vérifier la configuration au démarrage
+// Log pour vérifier la configuration
 console.log('🔧 AppConfig loaded:', {
   ENV: AppConfig.ENV,
   API_BASE_URL: AppConfig.API_BASE_URL,
