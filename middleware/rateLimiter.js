@@ -8,11 +8,12 @@
 const rateLimitConfig = {
   // Configuration globale
   global: {
-    max: 100, // 100 requêtes
+    max: 1000, // Augmenter en dev si activé par erreur
     timeWindow: '15 minutes', // par 15 minutes
     ban: 3, // Bannir après 3 dépassements
     cache: 10000, // Cache 10k IP
-    allowList: ['127.0.0.1'], // IPs whitelistées
+    allowList: ['127.0.0.1', '::1', 'localhost'], // IPs whitelistées
+    enabled: process.env.NODE_ENV !== 'development', // Désactiver en dev
     redis: null, // Optionnel: utiliser Redis pour cluster
     skipOnError: true, // Ne pas bloquer si erreur
     onBanReach: (req, key) => {

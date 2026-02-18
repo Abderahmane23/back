@@ -1,58 +1,58 @@
 const Commande = require('../models/Commande');
-const Piece = require('../models/Piece');
+const Product = require('../models/Product');
 
 async function commandeRoutes(fastify, options) {
   
   // POST - Créer une commande
   fastify.post('/', async (request, reply) => {
     try {
-      const { userId, pieces, adresse } = request.body;
+      const { userId, products, adresse } = request.body;
 
-      if (!userId || !pieces || pieces.length === 0) {
+      if (!userId || !products || products.length === 0) {
         return reply.code(400).send({
           success: false,
-          message: 'UserId et pièces sont requis'
+          message: 'UserId et produits sont requis'
         });
       }
 
       let totalCommande = 0;
-      const piecesDetails = [];
+      const productsDetails = [];
 
-      for (const item of pieces) {
-        const piece = await Piece.findById(item.pieceId);
+      for (const item of products) {
+        const product = await Product.findById(item.productId);
 
-        if (!piece) {
+        if (!product) {
           return reply.code(404).send({
             success: false,
-            message: `Pièce ${item.pieceId} non trouvée`
+            message: `Produit ${item.productId} non trouvé`
           });
         }
 
-        if (piece.quantite < item.quantite) {
+        if (product.stock < item.quantite) {
           return reply.code(400).send({
             success: false,
-            message: `Quantité insuffisante pour ${piece.nom}. Disponible: ${piece.quantite}`
+            message: `Quantité insuffisante pour ${product.name}. Disponible: ${product.stock}`
           });
         }
 
-        const totalItem = piece.prixUnitaire * item.quantite;
+        const totalItem = product.price * item.quantite;
         totalCommande += totalItem;
 
-        piecesDetails.push({
-          pieceId: piece._id,
-          nom: piece.nom,
+        productsDetails.push({
+          productId: product._id,
+          nom: product.name,
           quantite: item.quantite,
-          prixUnitaire: piece.prixUnitaire,
+          prixUnitaire: product.price,
           total: totalItem
         });
 
-        piece.quantite -= item.quantite;
-        await piece.save();
+        product.stock -= item.quantite;
+        await product.save();
       }
 
       const commande = new Commande({
         userId,
-        pieces: piecesDetails,
+        products: productsDetails,
         totalCommande,
         adresse,
         statut: 'en_cours'
@@ -234,10 +234,10 @@ async function commandeRoutes(fastify, options) {
 
       // Remettre les quantités en stock
       for (const item of commande.pieces) {
-        const piece = await Piece.findById(item.pieceId);
-        if (piece) {
-          piece.quantite += item.quantite;
-          await piece.save();
+        const product = await Product.findById(item.pieceId);
+        if (product) {
+          product.stock += item.quantite;
+          await product.save();
         }
       }
 

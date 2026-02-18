@@ -17,10 +17,10 @@ const commandeSchema = new mongoose.Schema({
     quartier: { type: String },
     details: { type: String }
   },
-  pieces: [{
-    pieceId: {
+  products: [{
+    productId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Piece',
+      ref: 'Product',
       required: true
     },
     nom: { type: String },

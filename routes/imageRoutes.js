@@ -1,158 +1,225 @@
-// routes/imageRoutes.js
 const Anthropic = require('@anthropic-ai/sdk');
+const Product = require('../models/Product');
+const fs = require('fs');
+const path = require('path');
 
 async function imageRoutes(fastify, options) {
-  // ======================
-  // POST /api/image/analyze
-  // ======================
-  fastify.post('/analyze', async (request, reply) => {
+  
+  // GET /api/image - List all available images in public/images/products
+  fastify.get('/', async (request, reply) => {
     try {
-      const { image } = request.body;
-
-      if (!image) {
-        return reply.code(400).send({
-          success: false,
-          message: 'Image requise'
-        });
+      const imagesDir = path.join(__dirname, '../public/images/products');
+      if (!fs.existsSync(imagesDir)) {
+        return { success: true, images: [] };
       }
-
-      // Validate image size (max 10MB)
-      const imageSizeInBytes = Buffer.from(image, 'base64').length;
-      const maxSize = 10 * 1024 * 1024;
-      if (imageSizeInBytes > maxSize) {
-        return reply.code(400).send({
-          success: false,
-          message: 'Image trop volumineuse (max 10MB)'
-        });
-      }
-
-      fastify.log.info('Analyzing image with Claude Vision...');
-
-      // ======================
-      // 1️⃣ Analyze image with Claude
-      // ======================
-      const analysisResult = await analyzeImageWithClaude(image);
-
-      fastify.log.info('Image analysis complete:', {
-        partName: analysisResult.partName,
-        confidence: analysisResult.confidence
-      });
-
-      // ======================
-      // 2️⃣ Find matching products using RAG helper
-      // ======================
-      try {
-        const matchedProducts = await findMatchingProducts(
-          analysisResult.partName,
-          analysisResult.description,
-          analysisResult.keywords
-        );
-
-        fastify.log.info(`Found ${matchedProducts.length} matching products`);
-
-        return {
-          success: true,
-          analysis: analysisResult,
-          matchedProducts
-        };
-      } catch (matchError) {
-         fastify.log.error('Error finding matching products:', matchError);
-         // Return analysis even if matching fails
-         return {
-            success: true,
-            analysis: analysisResult,
-            matchedProducts: [],
-            warning: "Erreur lors de la recherche de produits correspondants"
-         };
-      }
+      const files = fs.readdirSync(imagesDir);
+      const images = files.filter(file => 
+        ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif'].includes(path.extname(file).toLowerCase())
+      ).map(file => `/images/products/${file}`);
+      
+      return { success: true, count: images.length, images };
     } catch (error) {
-      fastify.log.error('Error processing image request:', error);
-      reply.code(500).send({
-        success: false,
-        message: error.message || "Erreur lors de l'analyse de l'image",
-        error: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      });
+      fastify.log.error(error);
+      return reply.code(500).send({ success: false, message: "Erreur lors de la lecture des images" });
     }
   });
 
-  // ======================
-  // Helper function: Analyze image with Claude
-  // ======================
-  async function analyzeImageWithClaude(base64Image) {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error('ANTHROPIC_API_KEY non configurée');
-    }
+  fastify.post('/analyze', async (request, reply) => {
+    try {
+      let { image } = request.body;
+      if (!image) return reply.code(400).send({ success: false, message: 'Image requise' });
 
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      if (image.includes('base64,')) image = image.split('base64,')[1];
+
+      // 1. ANALYSE UNIVERSELLE (Claude identifie la pièce peu importe la marque)
+      const analysisResult = await analyzeImageWithClaude(image);
+
+      // 2. MATCHING FLEXIBLE (Trouver le plus proche dans la DB actuelle)
+      const matchedProducts = await internalFindMatchingProducts(analysisResult, request);
+
+      return { 
+        success: true, 
+        analysis: analysisResult, 
+        matchedProducts 
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.code(500).send({ success: false, message: "Erreur d'analyse", error: error.message });
+    }
+  });
+
+  // ==========================================
+  // IA : Identification et Orientation
+  // ==========================================
+  async function analyzeImageWithClaude(base64Image) {
+    // If no API key, return a graceful fallback instead of throwing
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return {
+        partNameEn: null,
+        partNameFr: null,
+        description: 'Analyse IA indisponible pour le moment.',
+        'part-location': null,
+        'Replacement-guide': null,
+        brandDetected: null,
+        vehicleType: null,
+        serialNumber: null,
+        keywords: []
+      };
+    }
 
     try {
+      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
       const message = await anthropic.messages.create({
-        model: 'claude-3-haiku-20240307',
-        max_tokens: 1024,
-        messages: [
-          {
-            role: 'user',
-            content: [
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 900,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
+            {
+              type: 'text',
+              text: `Tu es un expert en pièces détachées multi-marques (Poids lourds, utilitaires, voitures).
+              1. Identifie la pièce sur l'image.
+              2. Cherche une marque ou un numéro de série sur la pièce.
+              3. Donne une description courte et un guide de changement comme indiquer ci-dessous.
+              
+              Réponds en JSON strict :
               {
-                type: 'image',
-                source: { type: 'base64', media_type: 'image/jpeg', data: base64Image }
-              },
-              {
-                type: 'text',
-                text: `
-Vous êtes un expert en pièces automobiles. Analysez cette image et retournez UNIQUEMENT au format JSON :
+                "partNameEn": "Nom technique anglais (ex: Alternator)",
+                "partNameFr": "Nom technique français (ex: Alternateur)",
+                
+                "description": "Explique à quoi sert cette pièce et comment vérifier son état.",
+                "part-location": "Explique Où se situe la pièce dans le véhicule.",
+                "Replacement-guide": "Explique comment changer la pièce.",
+                "brandDetected": "Marque détectée sur l'image ou null",
+                "vehicleType": "Catégorie (ex: Camion, Voiture, Engin)",
+                "serialNumber": "Code extrait ou null",
+                "keywords": ["mots", "clés", "recherche"]
+              }`
+            }
+          ]
+        }]
+      });
+      const text = message.content?.[0]?.text || '{}';
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) {
+        return {
+          partNameEn: null,
+          partNameFr: null,
+          description: 'Analyse IA non concluante.',
+          'part-location': null,
+          'Replacement-guide': null,
+          brandDetected: null,
+          vehicleType: null,
+          serialNumber: null,
+          keywords: []
+        };
+      }
+      return JSON.parse(match[0]);
+    } catch (e) {
+      return {
+        partNameEn: null,
+        partNameFr: null,
+        description: 'Analyse IA échouée.',
+        'part-location': null,
+        'Replacement-guide': null,
+        brandDetected: null,
+        vehicleType: null,
+        serialNumber: null,
+        keywords: []
+      };
+    }
+  }
 
-{
-  "partName": "nom précis de la pièce en français",
-  "description": "description détaillée de la pièce avec caractéristiques visibles",
-  "confidence": 0.95,
-  "keywords": ["mot-clé1", "mot-clé2"],
-  "category": "catégorie de la pièce",
-  "possibleBrands": ["marque1", "marque2"]
-}
+  // ==========================================
+  // RAG : Recherche de similarité en base
+  // ==========================================
+  async function internalFindMatchingProducts(analysis, request) {
+    const { partNameEn, partNameFr, brandDetected, serialNumber, keywords } = analysis;
 
-Si ce n'est pas une pièce automobile, retournez:
-{
-  "partName": "Non identifié",
-  "description": "Cette image ne semble pas contenir une pièce automobile",
-  "confidence": 0.0,
-  "keywords": [],
-  "category": "unknown",
-  "possibleBrands": []
-}`
-              }
-            ]
-          }
-        ]
+    // Création d'un "poids" de mots-clés - with null checks
+    const tokens = new Set();
+    
+    // Add English part name tokens
+    if (partNameEn && typeof partNameEn === 'string') {
+      partNameEn.toLowerCase().split(' ').forEach(token => tokens.add(token));
+    }
+    
+    // Add French part name tokens
+    if (partNameFr && typeof partNameFr === 'string') {
+      partNameFr.toLowerCase().split(' ').forEach(token => tokens.add(token));
+    }
+    
+    // Add keywords
+    if (keywords && Array.isArray(keywords)) {
+      keywords.forEach(k => {
+        if (k && typeof k === 'string') tokens.add(k.toLowerCase());
+      });
+    }
+    
+    // Si une marque est vue sur l'image, on l'ajoute en priorité
+    if (brandDetected && typeof brandDetected === 'string') {
+      tokens.add(brandDetected.toLowerCase());
+    }
+    
+    if (serialNumber && typeof serialNumber === 'string') {
+      tokens.add(serialNumber.toLowerCase());
+    }
+
+    const finalTokens = Array.from(tokens).filter(t => t && t.length > 2);
+    if (finalTokens.length === 0) return [];
+
+    // Recherche très large (OR) pour ne rien rater
+    const queryRegex = finalTokens.map(t => new RegExp(t, 'i'));
+
+    const potentialMatches = await Product.find({
+      $or: [
+        { name: { $in: queryRegex } },
+        { sku: { $in: queryRegex } },
+        { description: { $in: queryRegex } }
+      ]
+    }).limit(15);
+
+    // Scoring dynamique
+    const scored = potentialMatches.map(product => {
+      const pName = (product.name || '').toLowerCase();
+      let score = 0;
+
+      finalTokens.forEach(token => {
+        // Bonus si le mot est dans le nom du produit
+        if (pName.includes(token)) score += 2;
+        // Bonus si c'est la marque détectée - SAFE CHECK
+        if (brandDetected && typeof brandDetected === 'string' && 
+            pName.includes(brandDetected.toLowerCase())) {
+          score += 5;
+        }
+        // Bonus ultime pour le numéro de série - SAFE CHECK
+        if (serialNumber && typeof serialNumber === 'string' && 
+            pName.includes(serialNumber.toLowerCase())) {
+          score += 10;
+        }
       });
 
-      // Parse JSON response from Claude
-      const responseText = message.content
-        .filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n');
+      // In development, hardcode localhost:5000. In production, use dynamic URL
+      const baseUrl = process.env.NODE_ENV === 'development' 
+        ? 'http://localhost:5000'
+        : `${request.protocol || 'https'}://${request.headers.host || request.hostname}`;
+      
+      return {
+        ...product.toObject(),
+        similarityScore: score,
+        prix: product.price,
+        stock: product.stock,
+        image_url: product.images && product.images.length > 0
+          ? `${baseUrl}/images/products/${product.images[0]}` 
+          : null
+      };
+    });
 
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('Format de réponse invalide de Claude');
-
-      const analysis = JSON.parse(jsonMatch[0]);
-
-      if (!analysis.partName || !analysis.description || analysis.confidence === undefined) {
-        throw new Error("Données d'analyse incomplètes");
-      }
-
-      return analysis;
-    } catch (err) {
-      fastify.log.error({ err }, 'Claude API error details');
-      if (err.response) {
-         fastify.log.error({ 
-           status: err.status, 
-           headers: err.headers, 
-           error: err.error 
-         }, 'Claude API Response Error');
-      }
-      throw err;
-    }
+    // On trie par score et on renvoie même si le match n'est pas parfait
+    return scored
+      .sort((a, b) => b.similarityScore - a.similarityScore)
+      .slice(0, 5); 
   }
 }
 
